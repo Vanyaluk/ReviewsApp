@@ -44,7 +44,7 @@ extension NetworkService {
     }
     
     /// Имитация загрузки фото из сети.
-    func loadPhotos(with url: String, completion: @escaping (ResponseResult) -> Void) {
+    func loadPhoto(url: String, completion: @escaping (ResponseResult) -> Void) {
         guard
             let named = url.components(separatedBy: "/").last,
             let image = UIImage(named: named)

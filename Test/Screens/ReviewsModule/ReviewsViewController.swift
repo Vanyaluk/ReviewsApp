@@ -41,7 +41,7 @@ private extension ReviewsViewController {
     func setupViewModel() {
         viewModel.onStateChange = { [weak self] _ in
             self?.reviewsView.tableView.reloadData()
+            self?.reviewsView.loader.stopAnimating()
         }
     }
-
 }

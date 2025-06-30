@@ -8,12 +8,14 @@ final class ReviewsViewModel: NSObject {
 
     private var state: State
     private let networkService: NetworkService
+    private let cashingServise: CashingServise
     private let ratingRenderer: RatingRenderer
     private let decoder: JSONDecoder
 
     init(
         state: State = State(),
         networkService: NetworkService = NetworkService(),
+        cashingService: CashingServise = CashingServise(),
         ratingRenderer: RatingRenderer = RatingRenderer(),
         decoder: JSONDecoder = JSONDecoder()
     ) {
@@ -21,7 +23,7 @@ final class ReviewsViewModel: NSObject {
         self.networkService = networkService
         self.ratingRenderer = ratingRenderer
         self.decoder = decoder
-        
+        self.cashingServise = cashingService
         super.init()
         
         setup()
@@ -47,7 +49,6 @@ extension ReviewsViewModel {
             networkService.getReviews(offset: state.offset, completion: gotReviews)
         }
     }
-
 }
 
 // MARK: - Private
@@ -106,46 +107,62 @@ private extension ReviewsViewModel {
         }
     }
     
-    /// Метод для получения списка заглушек.
-    func blinkPhotos(_ count: Int) -> [UIImage?] {
-        var images: [UIImage?] = []
-        for _ in 0..<count {
-            images.append(.blink)
+    /// Метод для загрузки фотографии.
+    func loadPhoto(url: String, completion: @escaping () -> Void) {
+        DispatchQueue(label: "com.test.serial", attributes: .concurrent).async { [weak self] in
+            self?.networkService.loadPhoto(url: url, completion: { [weak self] result in
+                DispatchQueue.main.async { [weak self] in
+                    guard
+                        let data = (try? result.get()),
+                        let name = url.components(separatedBy: "/").last
+                    else { return completion() }
+                    let image = UIImage(data: data)
+                
+                    self?.cashingServise.addImage(name: name, image: image)
+                    completion()
+                }
+            })
         }
-        return images
     }
     
-    func loadPhotos(configId: UUID, urls: [String]) {
-        guard !urls.isEmpty else { return }
-        
+    /// Получить изображение из кеша или перенаправить на его загрузку.
+    /// Если нету картинки, то вместо нее blink image.
+    func getImages(
+        photoUrls: [String], allowsLoad: Bool = true,
+        completion: (() -> Void)? = nil) -> [UIImage?] {
+        var images: [UIImage?] = []
         let group = DispatchGroup()
-        var images = [UIImage?]()
         
-        urls.forEach { url in
-            group.enter()
-            DispatchQueue(label: "com.test.serial").async { [weak self] in
-                self?.networkService.loadPhotos(with: url) { result in
-                    DispatchQueue.main.async {
-                        let data = (try? result.get())
-                        images.append(UIImage(data: data ?? Data()))
+        photoUrls.forEach { url in
+            if let name = url.components(separatedBy: "/").last,
+                let image = cashingServise.getImage(name: name) {
+                images.append(image)
+            } else {
+                images.append(UIImage.blink)
+                if allowsLoad {
+                    group.enter()
+                    loadPhoto(url: url) {
                         group.leave()
                     }
                 }
             }
         }
-        
-        group.notify(queue: .main) { [weak self] in
-            guard let self else { return }
-            guard
-                let index = state.items.firstIndex(where: { ($0 as? ReviewItem)?.id == configId }),
-                var item = state.items[index] as? ReviewItem
-            else { return }
             
-            item.images = images
-            
-            state.items[index] = item
-            onStateChange?(state)
+        group.notify(queue: .main) {
+            completion?()
         }
+            
+        return images
+    }
+    
+    func reloadRowForCashedImages(id: UUID, photoUrls: [String]) {
+        guard
+            let index = state.items.firstIndex(where: { ($0 as? ReviewItem)?.id == id }),
+            var item = state.items[index] as? ReviewItem
+        else { return }
+        item.images = getImages(photoUrls: photoUrls, allowsLoad: false)
+        state.items[index] = item
+        onStateChange?(state)
     }
 }
 
@@ -157,14 +174,18 @@ private extension ReviewsViewModel {
     typealias CountItem = ReviewCountCellConfig
 
     func makeReviewItem(_ review: Review) -> ReviewItem {
+        let id = UUID()
         let reviewText = review.text.attributed(font: .text)
         let created = review.created.attributed(font: .created, color: .created)
         let username = "\(review.firstName) \(review.lastName)".attributed(font: .username)
         let rating = ratingRenderer.ratingImage(review.rating)
         let avatar = UIImage(named: "l5w5aIHioYc")
-        let images = blinkPhotos(review.photoUrls.count)
+        let images = getImages(photoUrls: review.photoUrls) { [weak self] in
+            self?.reloadRowForCashedImages(id: id, photoUrls: review.photoUrls)
+        }
         
         let item = ReviewItem(
+            id: id,
             avatar: avatar,
             username: username,
             rating: rating,
@@ -173,8 +194,6 @@ private extension ReviewsViewModel {
             images: images) { [weak self] id in
                 self?.showMoreReview(with: id)
             }
-        
-        loadPhotos(configId: item.id, urls: review.photoUrls)
         
         return item
     }
